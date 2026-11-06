@@ -1,0 +1,53 @@
+{
+  "id": "pf1-auto-heal",
+  "title": "PF1 自动治疗",
+  "description": "<p>释放治疗法术时，自动把治疗量应用到已选中的目标身上。</p><ul><li>目标在法术范围内 → 直接治疗</li><li>目标是敌对阵营 → 弹窗确认</li><li>没选目标 / 不在范围内 → 不动</li></ul><p>需要 Pathfinder 1e 系统。</p>",
+  "version": "0.3.0",
+  "authors": [
+    {
+      "name": "DSH"
+    }
+  ],
+  "compatibility": {
+    "minimum": "11",
+    "verified": "13",
+    "maximum": "13"
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "pf1",
+        "type": "system",
+        "compatibility": {
+          "minimum": "11.0"
+        }
+      }
+    ],
+    "recommends": [
+      {
+        "id": "socketlib",
+        "type": "module",
+        "reason": "用 socketlib 的 GM 代理通道治疗无权限的角色卡更可靠；没有它也能用原生 socket 回退。"
+      }
+    ]
+  },
+  "esmodules": [
+    "scripts/main.js"
+  ],
+  "languages": [
+    {
+      "lang": "zh-CN",
+      "name": "中文（简体）",
+      "path": "lang/zh-CN.json"
+    },
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "socket": true,
+  "library": false,
+  "manifest": "",
+  "download": ""
+}

@@ -1,0 +1,19 @@
+{
+  "PF1AUTOHEAL.DialogTitle": "Heal a Hostile Target?",
+  "PF1AUTOHEAL.Confirm": "Heal",
+  "PF1AUTOHEAL.Cancel": "Cancel",
+  "PF1AUTOHEAL.Setting.Enabled": "Enable Auto Heal",
+  "PF1AUTOHEAL.Setting.EnabledHint": "Automatically apply healing to targeted tokens after casting a healing spell.",
+  "PF1AUTOHEAL.Setting.CheckRange": "Check Spell Range",
+  "PF1AUTOHEAL.Setting.CheckRangeHint": "When disabled, any targeted token is healed regardless of distance.",
+  "PF1AUTOHEAL.Setting.UnknownRange": "When Range Is Unknown",
+  "PF1AUTOHEAL.Setting.UnknownRangeHint": "Some spells have no range data. Choose: treat as touch (5 ft), allow, or block.",
+  "PF1AUTOHEAL.Setting.ConfirmHostile": "Confirm for Hostile Targets",
+  "PF1AUTOHEAL.Setting.ConfirmHostileHint": "Ask before healing a target that is hostile to the caster.",
+  "PF1AUTOHEAL.Setting.FeyFoundling": "Detect Fey Foundling",
+  "PF1AUTOHEAL.Setting.FeyFoundlingHint": "If the target has the Fey Foundling feat, add +2 per healing die (2d8+5 becomes 2d8+9).",
+  "PF1AUTOHEAL.Setting.FeyDebug": "Fey Foundling Debug Log",
+  "PF1AUTOHEAL.Setting.FeyDebugHint": "Print whether the feat matched, how many dice, and the bonus.",
+  "PF1AUTOHEAL.Setting.Debug": "Debug Logging",
+  "PF1AUTOHEAL.Setting.DebugHint": "Print range/distance decisions to the browser console."
+}

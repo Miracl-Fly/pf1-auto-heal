@@ -1,0 +1,19 @@
+{
+  "PF1AUTOHEAL.DialogTitle": "治疗敌对目标？",
+  "PF1AUTOHEAL.Confirm": "治疗",
+  "PF1AUTOHEAL.Cancel": "取消",
+  "PF1AUTOHEAL.Setting.Enabled": "启用自动治疗",
+  "PF1AUTOHEAL.Setting.EnabledHint": "治疗法术释放后，自动把治疗量应用到选中的目标上。",
+  "PF1AUTOHEAL.Setting.CheckRange": "检查法术范围",
+  "PF1AUTOHEAL.Setting.CheckRangeHint": "关闭后，只要选中了目标就治疗，不判断距离。",
+  "PF1AUTOHEAL.Setting.UnknownRange": "射程读不出来时怎么办",
+  "PF1AUTOHEAL.Setting.UnknownRangeHint": "有些法术没填射程数据。这时可以选择：按「触碰」处理（5 尺）、直接放行、或者拦下不治。",
+  "PF1AUTOHEAL.Setting.ConfirmHostile": "对敌对目标弹窗确认",
+  "PF1AUTOHEAL.Setting.ConfirmHostileHint": "目标与施法者敌对时，先弹窗问一句再治疗。",
+  "PF1AUTOHEAL.Setting.FeyFoundling": "检测【精类遗孤 Fey Foundling】",
+  "PF1AUTOHEAL.Setting.FeyFoundlingHint": "目标拥有「精类遗孤」专长时，受到魔法治疗会按骰数额外 +2/骰（2d8+5 就是 +4）。",
+  "PF1AUTOHEAL.Setting.FeyDebug": "输出【精类遗孤】判定日志",
+  "PF1AUTOHEAL.Setting.FeyDebugHint": "开启后会在控制台打印是否命中该专长、数了几颗骰子、加了多少。",
+  "PF1AUTOHEAL.Setting.Debug": "输出诊断日志",
+  "PF1AUTOHEAL.Setting.DebugHint": "开启后会在浏览器控制台打印每次治疗的距离/射程判断过程，排查问题时用。"
+}
