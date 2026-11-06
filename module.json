@@ -5,7 +5,7 @@
   "version": "0.3.0",
   "authors": [
     {
-      "name": "DSH"
+      "name": "Miracl-Fly"
     }
   ],
   "compatibility": {
@@ -48,6 +48,6 @@
   ],
   "socket": true,
   "library": false,
-  "manifest": "",
-  "download": ""
+  "manifest": "https://github.com/Miracl-Fly/pf1-auto-heal/releases/download/v1.0.0/pf1-auto-heal.zip",
+  "download": "https://github.com/Miracl-Fly/pf1-auto-heal/releases/download/v1.0.0/module.json"
 }
