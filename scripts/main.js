@@ -15,6 +15,16 @@
 const MODULE_ID = "pf1-auto-heal";
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 
+/**
+ * 跨客户端传参协议版本。
+ * 1（或缺失）= 传过去的 amount 已经是「含精类遗孤加成」的最终值
+ * 2          = 传过去的 amount 是「未加成的基础值」，由落地那一侧算一次加成
+ *
+ * 有了这个标记，新旧客户端混用也不会把 +2/骰 加两遍：
+ * 旧客户端（无标记）发来的数被当成最终值，新 GM 不再补加。
+ */
+const CONTRACT = 2;
+
 /** socketlib 模块句柄（null = 不可用，会回退原生 socket） */
 let socketlibSocket = null;
 
@@ -123,8 +133,9 @@ Hooks.once("ready", () => {
   setupHealSocket();
 
   const mod = game.modules?.get?.(MODULE_ID);
+  const ver = mod?.version ?? "?";
   console.log(
-    `${MODULE_ID} | v0.2.0 就绪 | 模块 socket 标记: ${mod?.socket ? "已生效" : "未生效（需重启 FVTT 服务器）"}` +
+    `${MODULE_ID} | v${ver} 就绪 | 模块 socket 标记: ${mod?.socket ? "已生效" : "未生效（需重启 FVTT 服务器）"}` +
       ` | GM 代劳通道: ${socketlibSocket ? "socketlib" : "聊天消息"}`
   );
 });
@@ -190,24 +201,26 @@ Hooks.on("pf1PostActionUse", async (actionUse, message) => {
     const dice = countHealDice(actionUse, message);
 
     // 逐个应用
+    // ⚠️ 这里往下传的一律是「未加成的基础值 baseAmount」+ 骰数 dice，
+    //    【精类遗孤】的 +2/骰 只在 applyHeal 里、在真正写血的那一侧算一次。
+    //    之前这里先算好再传，GM 代劳时 GM 又算了一遍 → 加成翻倍（这就是「回得太多」的根因）。
     const confirmHostile = game.settings.get(MODULE_ID, "confirmHostile");
     for (const t of valid) {
       try {
-        const amount = computeHealAmount(t.actor, baseAmount, dice);
-
         const hostile = isHostile(token, t);
         if (hostile && confirmHostile) {
-          const yes = await askHealHostile(t, amount, actor);
+          // 弹窗只是给 GM/玩家看个数，不参与落地计算
+          const preview = computeHealAmount(t.actor, baseAmount, dice);
+          const yes = await askHealHostile(t, preview, actor);
           if (!yes) {
             console.debug(`${MODULE_ID} | 用户取消治疗:`, t.name);
             continue;
           }
         }
-        await applyHeal(t.actor, amount, actionUse, message, dice);
-        console.log(
-          `${MODULE_ID} | 已治疗 ${t.actor.name} +${amount}` +
-            (amount > baseAmount ? `（基础 ${baseAmount}，精类遗孤 +${amount - baseAmount}）` : "")
-        );
+
+        const res = await applyHeal(t.actor, baseAmount, actionUse, message, dice);
+        const applied = Number(res?.amount ?? baseAmount);
+        logHeal(t.actor, baseAmount, dice, applied, res?.via);
       } catch (err) {
         console.error(`${MODULE_ID} | 治疗 ${t?.name} 失败:`, err);
       }
@@ -525,14 +538,20 @@ export function isHostile(sourceToken, target) {
  * ========================================================== */
 
 export function resolveHealAmount(actionUse, message) {
-  // 1) 最可靠：ChatAttack 上的 totalDamage（系统自己算好的总和）
   const attacks = actionUse?.shared?.chatAttacks ?? [];
+
+  // 0) PF1 v11 的 AttackDamage 上有系统自己算好的 total
+  //    （注意：pf1 里**没有** totalDamage 这个字段，下面那条只是给旧数据留的兼容分支）
+  for (const atk of attacks) {
+    const t = Number(atk?.damage?.total);
+    if (Number.isFinite(t) && t > 0) return t;
+  }
   for (const atk of attacks) {
     const t = Number(atk?.totalDamage);
     if (Number.isFinite(t) && t > 0) return t;
   }
 
-  // 2) 退回逐段 roll 求和
+  // 1) 退回逐段 roll 求和
   let sum = 0;
   for (const atk of attacks) {
     for (const r of atk?.damage?.rolls ?? []) {
@@ -541,12 +560,23 @@ export function resolveHealAmount(actionUse, message) {
   }
   if (sum > 0) return sum;
 
-  // 3) 从 chat message 的 rolls 取
+  // 2) 从 chat message 的 rolls 取——**跳过纯 d20 的攻击骰**。
+  //    以前这里直接取第一个 total>0 的 roll，碰到「先攻击骰后伤害骰」的卡
+  //    就会把 d20 的点数当成治疗量（凭空多治 10~20 点）。
   for (const r of message?.rolls ?? []) {
-    if (Number.isFinite(r?.total) && r.total > 0) return r.total;
+    const total = Number(r?.total);
+    if (!Number.isFinite(total) || total <= 0) continue;
+    const terms = Array.isArray(r?.terms) ? r.terms : [];
+    if (terms.length === 0) return total; // 没有骰项信息，只能信这个 total
+    const onlyD20 = terms.every((term) => Number(term?.faces) === 20);
+    if (onlyD20) continue;
+    return total;
   }
 
-  // 4) 兜底：直接掷 action 的 damage parts
+  // 3) 兜底：现场掷一次 action 的 damage parts
+  //    ⚠️ 这是**重新掷**，掷出来的数和聊天卡上那个数不是同一个。
+  //    走到这一步说明卡上的数据没被识别，宁可吵一点也要留痕，
+  //    否则就会变成「明明掷了 12，血回了 23」这种查不出原因的过量治疗。
   try {
     const parts = actionUse?.action?.damage?.parts ?? [];
     let rolled = 0;
@@ -557,7 +587,12 @@ export function resolveHealAmount(actionUse, message) {
       roll.evaluateSync?.();
       rolled += Number(roll.total) || 0;
     }
-    if (rolled > 0) return rolled;
+    if (rolled > 0) {
+      console.warn(
+        `${MODULE_ID} | ⚠️ 聊天卡上读不到治疗量，已现场重掷 ${rolled}（与卡片显示值可能不同）`
+      );
+      return rolled;
+    }
   } catch (e) {
     console.debug(`${MODULE_ID} | 兜底掷骰失败:`, e);
   }
@@ -614,9 +649,14 @@ export function countHealDice(actionUse, message) {
     return Number.isFinite(f) && f > 1 && f !== 20;
   };
 
-  const diceFromRolls = (rolls) => {
+  const diceFromRolls = (rolls, seen = new Set()) => {
     let n = 0;
     for (const r of rolls ?? []) {
+      if (!r) continue;
+      // 同一个 Roll 对象如果既出现在 chatAttacks 又出现在 message.rolls，
+      // 只能数一次，否则骰数翻倍 → 精类遗孤多给一倍
+      if (seen.has(r)) continue;
+      seen.add(r);
       // roll.terms 里的 Die 项带 faces
       for (const term of r?.terms ?? []) {
         if (isHealDie(term?.faces)) n += Number(term.number) || 0;
@@ -627,12 +667,13 @@ export function countHealDice(actionUse, message) {
 
   // 1) ChatAttack 的伤害骰
   const attacks = actionUse?.shared?.chatAttacks ?? [];
+  const seen = new Set();
   let n = 0;
-  for (const atk of attacks) n += diceFromRolls(atk?.damage?.rolls);
+  for (const atk of attacks) n += diceFromRolls(atk?.damage?.rolls, seen);
   if (n > 0) return n;
 
   // 2) chat message 的骰
-  n = diceFromRolls(message?.rolls);
+  n = diceFromRolls(message?.rolls, seen);
   if (n > 0) return n;
 
   // 3) 从 action.damage.parts 的公式里数（2d8+5 -> 2）
@@ -692,6 +733,24 @@ export function computeHealAmount(actor, base, dice) {
   return amount + bonus;
 }
 
+/**
+ * 统一的一条治疗日志。
+ * 把「基础 / 骰数 / 加成 / 最终值 / 走哪条通道」都打出来，
+ * 下次再有人说「回得太多」，看这一行就知道多在哪一步。
+ */
+export function logHeal(actor, base, dice, amount, via) {
+  const b = Math.abs(Number(base) || 0);
+  const a = Math.abs(Number(amount) || 0);
+  const d = Number(dice) || 0;
+  const bonus = a - b;
+  console.log(
+    `${MODULE_ID} | 已治疗 ${actor?.name ?? "?"} +${a}` +
+      `（基础 ${b}` +
+      (bonus ? `，精类遗孤 +${bonus} = 2×${d}骰` : `，骰数 ${d}，无加成`) +
+      `，通道 ${via ?? "?"}）`
+  );
+}
+
 /* ============================================================
  * 应用治疗
  * ========================================================== */
@@ -717,23 +776,27 @@ function healOptions() {
 /* ---- socketlib：优先通道 ---- */
 
 /** GM 端真正执行治疗 */
-async function gmApplyHeal(actorUuid, amount, dice = 0) {
+/**
+ * @param amount   基础治疗量（contract>=2 时是「未加成」的原值；否则是最终值）
+ * @param dice     本次治疗的骰数
+ * @param contract 传参协议版本，见文件顶部 CONTRACT
+ */
+async function gmApplyHeal(actorUuid, amount, dice = 0, contract = 0) {
   const actor = await fromUuid(actorUuid);
   if (!actor) {
     console.warn(`${MODULE_ID} | GM 端找不到 actor:`, actorUuid);
     return { ok: false, reason: "actor-not-found" };
   }
-  const base = Math.abs(Number(amount) || 0);
-  if (!base) return { ok: false, reason: "bad-amount" };
+  const raw = Math.abs(Number(amount) || 0);
+  if (!raw) return { ok: false, reason: "bad-amount" };
 
-  // GM 端用完整权限重算【精类遗孤】
-  const amt = computeHealAmount(actor, base, dice);
+  // ⚠️ 只有 contract>=2 才在 GM 这边补算【精类遗孤】。
+  //    旧客户端（没带 contract）传过来的已经是最终值，再加一遍就是「回得太多」。
+  const amt =
+    Number(contract) >= CONTRACT ? computeHealAmount(actor, raw, dice) : raw;
 
   await actor.applyDamage(-amt, healOptions());
-  console.log(
-    `${MODULE_ID} | GM ${game.user.name} 已代为治疗 ${actor.name} +${amt}` +
-      (amt !== base ? `（基础 ${base}，精类遗孤 +${amt - base}）` : "")
-  );
+  logHeal(actor, raw, dice, amt, Number(contract) >= CONTRACT ? "gm-relay" : "gm-relay-legacy");
   return { ok: true, name: actor.name, amount: amt };
 }
 
@@ -776,15 +839,25 @@ Hooks.once("socketlib.ready", registerSocketlib);
  * 应用治疗。
  * 自己能动就自己动；动不了（目标是别人的角色卡）就请 GM 代劳。
  *
- * @param {number} amount 已经算好【精类遗孤】的治疗量（调用方负责）
- * @param {number} dice   本次治疗的骰数；转给 GM 端时用它重算加成
+ * ⚠️ 唯一约定：传进来的 `base` 必须是**未加成**的基础治疗量，
+ *    【精类遗孤】的 +2/骰 只在真正写血的那一侧（这里 / GM 端）算一次，
+ *    算完的最终值绝不会再被当作基础值传给下一个人。
+ *
+ * @param {number} base   基础治疗量（不含精类遗孤加成）
+ * @param {number} dice   本次治疗的骰数；转给 GM 端时用它算加成
+ * @returns {{ok:boolean, amount:number, via:string}|null}
  */
-export async function applyHeal(actor, amount, actionUse, message, dice = 0) {
+export async function applyHeal(actor, base, actionUse, message, dice = 0) {
   if (!actor) return null;
-  const amt = Math.abs(amount);
+  const raw = Math.abs(Number(base) || 0);
+  if (!raw) return null;
+
+  // 算一次，且只算一次
+  const amount = computeHealAmount(actor, raw, dice);
 
   if (canModify(actor)) {
-    return actor.applyDamage(-amt, healOptions());
+    await actor.applyDamage(-amount, healOptions());
+    return { ok: true, amount, via: "self" };
   }
 
   // 没权限：先看有没有 GM 在线
@@ -797,12 +870,19 @@ export async function applyHeal(actor, amount, actionUse, message, dice = 0) {
   }
 
   // 优先走 socketlib（需要 module.json 的 socket 标记已在服务器端生效）
+  // 注意：传 raw（未加成）+ dice + contract，让 GM 那边算一次
   if (socketlibSocket) {
     try {
-      const res = await socketlibSocket.executeAsGM("applyHealAsGM", actor.uuid, amt, dice);
+      const res = await socketlibSocket.executeAsGM(
+        "applyHealAsGM",
+        actor.uuid,
+        raw,
+        dice,
+        CONTRACT
+      );
       if (res?.ok) {
-        ui.notifications?.info?.(`已由 GM 代为治疗 ${actor.name} +${res.amount ?? amt}`);
-        return res;
+        ui.notifications?.info?.(`已由 GM 代为治疗 ${actor.name} +${res.amount ?? amount}`);
+        return { ok: true, amount: Number(res.amount ?? amount), via: "gm-socket" };
       }
       ui.notifications?.warn?.(
         `GM 代为治疗 ${actor.name} 失败：${res?.reason ?? "未知原因"}`
@@ -814,9 +894,10 @@ export async function applyHeal(actor, amount, actionUse, message, dice = 0) {
   }
 
   // 回退：聊天消息通道（不需要 socket 注册，刷新页面即可用）
-  const ok = await requestGmHealViaChat(actor, amt, dice);
+  const ok = await requestGmHealViaChat(actor, raw, dice);
   if (ok) {
-    ui.notifications?.info?.(`已请求 GM 代为治疗 ${actor.name}（+${amt}）`);
+    ui.notifications?.info?.(`已请求 GM 代为治疗 ${actor.name}（+${amount}）`);
+    return { ok: true, amount, via: "gm-chat" };
   } else {
     ui.notifications?.warn?.(`无法治疗 ${actor.name}：聊天消息通道也没发出去。`);
   }
@@ -833,12 +914,14 @@ export async function applyHeal(actor, amount, actionUse, message, dice = 0) {
  * ========================================================== */
 
 /** 玩家端：发一条只有 GM 能看到的请求 */
-export async function requestGmHealViaChat(actor, amount, dice = 0) {
+export async function requestGmHealViaChat(actor, base, dice = 0) {
   try {
     const gmIds = game.users
       ?.filter?.((u) => u.isGM)
       ?.map?.((u) => u.id) ?? [];
     if (!gmIds.length) return false;
+
+    const raw = Math.abs(Number(base) || 0);
 
     await ChatMessage.create({
       content: `<span></span>`,
@@ -849,13 +932,15 @@ export async function requestGmHealViaChat(actor, amount, dice = 0) {
         [MODULE_ID]: {
           type: "healRequest",
           actorUuid: actor.uuid,
-          amount: Math.abs(amount),
+          // raw = 未加成的基础值；GM 拿 contract 判断要不要补算
+          amount: raw,
           dice: Number(dice) || 0,
+          contract: CONTRACT,
           requesterName: game.user?.name ?? "",
         },
       },
     });
-    dbg("已通过聊天消息请求 GM 治疗", actor.name, amount);
+    dbg("已通过聊天消息请求 GM 治疗", actor.name, raw);
     return true;
   } catch (e) {
     console.error(`${MODULE_ID} | 聊天消息请求失败:`, e);
@@ -881,17 +966,20 @@ export async function handleHealChatMessage(msg) {
       return false;
     }
 
-    const base = Math.abs(Number(flag.amount) || 0);
-    if (!base) return false;
+    const raw = Math.abs(Number(flag.amount) || 0);
+    if (!raw) return false;
 
-    // GM 端用完整权限重新算一次【精类遗孤】——
-    // 玩家可能看不到对方卡上的专长，那一步在他那边会漏掉。
-    const amt = computeHealAmount(actor, base, flag.dice);
+    // ⚠️ 只有 contract>=2 才补算【精类遗孤】；旧客户端发来的已经是最终值。
+    const amt =
+      Number(flag.contract) >= CONTRACT ? computeHealAmount(actor, raw, flag.dice) : raw;
 
     await actor.applyDamage(-amt, healOptions());
-    console.log(
-      `${MODULE_ID} | GM ${game.user.name} 代 ${flag.requesterName} 治疗 ${actor.name} +${amt}` +
-        (amt !== base ? `（基础 ${base}，精类遗孤 +${amt - base}）` : "")
+    logHeal(
+      actor,
+      raw,
+      flag.dice,
+      amt,
+      Number(flag.contract) >= CONTRACT ? "gm-chat" : "gm-chat-legacy"
     );
 
     // 请求消息用完即删，别占聊天记录
@@ -929,13 +1017,13 @@ function setupHealSocket() {
       const base = Math.abs(Number(payload.amount) || 0);
       if (!base) return;
 
-      const amt = computeHealAmount(actor, base, payload.dice);
+      // 原生 socket 通道目前没人发（对外一律走 socketlib / 聊天消息），
+      // 但这里也照 CONTRACT 规矩来，别哪天接回来就加两遍。
+      const amt =
+        Number(payload.contract) >= CONTRACT ? computeHealAmount(actor, base, payload.dice) : base;
 
       await actor.applyDamage(-amt, healOptions());
-      console.log(
-        `${MODULE_ID} | GM ${game.user.name} 代 ${payload.requesterName} 治疗 ${actor.name} +${amt}` +
-          (amt !== base ? `（基础 ${base}，精类遗孤 +${amt - base}）` : "")
-      );
+      logHeal(actor, base, payload.dice, amt, "gm-native-socket");
     } catch (err) {
       console.error(`${MODULE_ID} | GM 代治失败:`, err);
     }
