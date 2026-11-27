@@ -368,6 +368,7 @@ const gmMsg = {
       actorUuid: "Actor.gmFey",
       amount: 13,
       dice: 3,
+      contract: 2,
       requesterName: "测试玩家",
     },
   },
@@ -376,6 +377,73 @@ const gmMsg = {
 eq("GM 处理成功", await m.handleHealChatMessage(gmMsg), true);
 eq("GM 按 13 + 2×3 = 19 治疗", gmHealed, -19);
 eq("消息已删", gmDeleted, true);
+
+// ---------------- 回归：精类遗孤加成只能算一次 ----------------
+console.log("\n=== 回归：跨权限时加成不能算两遍（0.3.2）===");
+
+// 目标有专长、玩家没有权限 → 走 GM 代劳
+const feyLocked = {
+  name: "别人的遗孤卡",
+  uuid: "Actor.feyLocked",
+  isOwner: false,
+  items: mkItems([feat("Fey Foundling")]),
+  applyDamage: async (v) => { gmHealed = v; return true; },
+};
+globalThis.__ACTORS = { "Actor.feyLocked": feyLocked };
+
+game.user.isGM = false; // 玩家身份
+MOCK_GM_CALLS = [];
+await m.applyHeal(feyLocked, 12, null, null, 2);
+const call = MOCK_GM_CALLS[MOCK_GM_CALLS.length - 1];
+eq("① 传给 GM 的是未加成的基础值 12", call?.args?.[1], 12);
+eq("② 骰数一并传过去", call?.args?.[2], 2);
+eq("③ 带上协议版本 2", call?.args?.[3], 2);
+
+// GM 收到新协议：补一次加成
+game.user.isGM = true;
+gmHealed = null;
+globalThis.__ACTORS = { "Actor.feyLocked": feyLocked };
+const gmNew = {
+  flags: { "pf1-auto-heal": { type: "healRequest", actorUuid: "Actor.feyLocked", amount: 12, dice: 2, contract: 2 } },
+  delete: async () => {},
+};
+await m.handleHealChatMessage(gmNew);
+eq("④ 新协议：12 + 2×2 = 16（只加一次）", gmHealed, -16);
+
+// GM 收到旧协议（老客户端，数已加过）：绝不能再加
+gmHealed = null;
+const gmOld = {
+  flags: { "pf1-auto-heal": { type: "healRequest", actorUuid: "Actor.feyLocked", amount: 16, dice: 2 } },
+  delete: async () => {},
+};
+await m.handleHealChatMessage(gmOld);
+eq("⑤ 旧协议：16 原样落地，不再补加", gmHealed, -16);
+
+// 自己能动的一侧也只算一次
+game.user.isGM = false;
+let selfHealed = null;
+const feyOwned = {
+  name: "自己的遗孤卡",
+  uuid: "Actor.feyOwned",
+  isOwner: true,
+  items: mkItems([feat("Fey Foundling")]),
+  applyDamage: async (v) => { selfHealed = v; return true; },
+};
+await m.applyHeal(feyOwned, 12, null, null, 2);
+eq("⑥ 有权限：12 + 2×2 = 16", selfHealed, -16);
+game.user.isGM = true;
+
+// 旧版实现会在这里得到 16+4=20（加成翻倍），这条用例就是钉住它不再回来
+eq("⑦ 端到端不是 20", selfHealed === -20, false);
+
+console.log("\n=== 回归：治疗量读数不再把 d20 攻击骰当成治疗 ===");
+const mkRoll = (total, faces) => ({ total, terms: [{ number: 1, faces }] });
+eq("ChatAttack 优先用 damage.total",
+  m.resolveHealAmount({ shared: { chatAttacks: [{ damage: { total: 14, rolls: [] } }] } }, null), 14);
+eq("message.rolls 里先 d20 后 d8 → 取 d8",
+  m.resolveHealAmount({ shared: {} }, { rolls: [mkRoll(18, 20), mkRoll(9, 8)] }), 9);
+eq("message.rolls 只有一个 d20 → 不取",
+  m.resolveHealAmount({ shared: {} }, { rolls: [mkRoll(18, 20)] }), 0);
 
 console.log(`\n===== 结果: ${pass} 通过, ${fail} 失败 =====`);
 try { fs.unlinkSync(tmpPath); } catch {}
